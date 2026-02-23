@@ -1,0 +1,90 @@
+- name: Open zabbix-agent port
+  ansible.posix.firewalld:
+    port: "{{ zabbix_agent_firewalld_port }}"
+    state: enabled
+    immediate: true
+    permanent: true
+
+- name: Making sure semanage is available on system
+  ansible.builtin.dnf:
+    name:
+      - policycoreutils-python-utils
+      - checkpolicy
+    state: present
+    update_cache: true
+
+- name: Allow zabbix agents ports in SELinux
+  community.general.seport:
+    ports: "{{ item }}"
+    proto: tcp
+    setype: zabbix_port_t
+    state: present
+  loop: "{{ zabbix_SELinux_ports }}"
+
+- name: Copy SELinux text file on to machines
+  ansible.builtin.copy:
+    src: zabbix_agent_local.te
+    dest: /tmp/
+    mode: '0644'
+
+- name: Check if zabbix_agent_local is in SEmodule list on system
+  ansible.builtin.shell: |
+    semodule -l | grep zabbix_agent_local
+  register: zabbix_se
+  ignore_errors: true
+  changed_when: false
+
+- name: Compile and integrate SELinux rules for zabbix
+  ansible.builtin.shell: |
+    checkmodule -M -m -o /tmp/zabbix_agent_local.mod /tmp/zabbix_agent_local.te
+    semodule_package -o /tmp/zabbix_agent_local.pp -m /tmp/zabbix_agent_local.mod
+    semodule -i /tmp/zabbix_agent_local.pp
+  when: "'zabbix_agent_local' not in zabbix_se.stdout"
+
+- name: Import GPG-Key
+  ansible.builtin.rpm_key:
+    state: present
+    key: https://repo.zabbix.com/RPM-GPG-KEY-ZABBIX-B5333005
+
+- name: Enable CRB repository for dependencies
+  ansible.builtin.shell: dnf config-manager --set-enabled crb
+
+- name: Install epel-release if not installed (Like on minimal AlmaLinux 9)
+  ansible.builtin.dnf:
+    name: 'https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm'
+    state: present
+    disable_gpg_check: true
+
+- name: Remove release Zabbix package
+  ansible.builtin.dnf:
+    name: zabbix-release
+    state: absent
+
+- name: Install release Zabbix package
+  ansible.builtin.dnf:
+    name: 'https://repo.zabbix.com/zabbix/7.0/alma/9/x86_64/zabbix-release-latest-7.0.el9.noarch.rpm'
+    state: present
+
+- name: Clear dnf cache for system to re-read package lists
+  ansible.builtin.shell: dnf clean all
+
+- name: Disable Zabbix packages provided by EPEL (if exists)
+  community.general.ini_file:
+    path: /etc/yum.repos.d/epel.repo
+    section: epel
+    option: excludepkgs
+    value: zabbix*
+    state: present
+
+- name: Install Zabbix-agent
+  ansible.builtin.dnf:
+    name:
+      - zabbix-agent
+    state: present
+
+- name: Use agent config file from template
+  ansible.builtin.template:
+    src: zabbix_agentd.conf.j2
+    dest: /etc/zabbix/zabbix_agentd.conf
+    mode: '0644'
+  notify: Restart zabbix-agent

@@ -1,0 +1,36 @@
+- name: Bootstrap nodes with required dependencies
+  hosts: all
+  become: yes
+  gather_facts: false
+
+  tasks:
+    - name: Ensure EPEL repository is installed
+      ansible.builtin.dnf:
+        name: epel-release
+        state: present
+
+    - name: Enable the CRB (CodeReady Builder) repository
+      ansible.builtin.shell: dnf config-manager --set-enabled crb
+      changed_when: false
+
+    - name: Clean all DNF cache
+      ansible.builtin.shell: dnf clean all
+      changed_when: false
+
+    - name: Install Python libraries required for Ansible modules
+      ansible.builtin.dnf:
+        name:
+          - firewalld
+          - python3-firewall
+          - python3-libselinux
+          - python3-PyMySQL
+          - python3-pylibacl
+          - policycoreutils-python-utils
+        state: present
+        update_cache: true
+
+    - name: Ensure firewalld service is started and enabled
+      ansible.builtin.service:
+        name: firewalld
+        state: started
+        enabled: true

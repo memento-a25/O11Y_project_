@@ -1,0 +1,11 @@
+---
+- hosts: master
+  become: yes
+
+  vars_files:
+    - roles/zabbix-server/vars/zabbix_credentials.yml
+    - roles/zabbix-server/vars/main.yml
+    - roles/kibana/vars/elastic_credentials.yml
+
+  roles:
+    - grafana

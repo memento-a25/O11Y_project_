@@ -1,0 +1,95 @@
+---
+- hosts: master
+  become: yes
+  roles:
+  - zabbix-server
+
+
+- hosts: all:!master
+  become: yes
+  roles:
+  - zabbix-agent
+
+# ----------------------------------------------------
+
+# PLAY 2: Начальная настройка безопасности API (смена пароля по умолчанию)
+- hosts: master
+  gather_facts: false
+  become: false
+  tags: user
+
+  vars_files:
+    - roles/zabbix-server/vars/zabbix_credentials.yml
+
+  vars:
+  # --- Подключение со СТАНДАРТНЫМ паролем ---
+    ansible_network_os: community.zabbix.zabbix
+    ansible_connection: httpapi
+    ansible_httpapi_port: 443
+    ansible_httpapi_use_ssl: true
+    ansible_httpapi_validate_certs: false
+    ansible_user: Admin
+    ansible_httpapi_pass: zabbix
+    ansible_zabbix_url_path: "/"
+
+
+  tasks:
+    - name: Change Admin user password to the one from Vault
+      community.zabbix.zabbix_user:
+        username: Admin
+        current_passwd: zabbix
+        override_passwd: true
+        passwd: "{{ zabbix_admin_password }}"
+        usrgrps:
+          - "Zabbix administrators"
+        state: present
+      ignore_errors: true # Игнор ошибки, если пароль уже был сменен, для идемпотентности
+      register: zabbix_user_result
+      until: zabbix_user_result is succeeded
+      retries: 5
+      delay: 3
+
+
+# ----------------------------------------------------
+
+# PLAY 3: Конфигурация хостов (уже с безопасным паролем)
+- hosts: master
+  gather_facts: false
+  become: false
+  tags: hosts
+
+  vars_files:
+    - roles/zabbix-server/vars/zabbix_credentials.yml
+
+  vars:
+    ansible_network_os: community.zabbix.zabbix
+    ansible_connection: httpapi
+    ansible_httpapi_port: 443
+    ansible_httpapi_use_ssl: true
+    ansible_httpapi_validate_certs: false
+    ansible_zabbix_url_path: "/"
+    ansible_user: Admin
+    ansible_httpapi_pass: "{{ zabbix_admin_password }}"
+
+  tasks:
+    - name: Create/Update Zabbix hosts for all nodes
+      community.zabbix.zabbix_host:
+        host_name: "{{ item }}"
+        host_groups:
+          - "Linux servers"
+        link_templates:
+          - "Linux by Zabbix agent"
+        status: enabled
+        state: present
+        interfaces:
+          - type: 1
+            main: 1
+            useip: 1
+            ip: "{{ hostvars[item]['ansible_host'] }}"
+            dns: ""
+            port: "10050"
+      loop: "{{ groups['workers'] + groups['elk'] }}"
+      register: zabbix_host_result
+      until: zabbix_host_result is succeeded
+      retries: 5
+      delay: 3

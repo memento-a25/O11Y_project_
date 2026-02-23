@@ -1,0 +1,9 @@
+# Secrets
+.vault_pass
+
+# Fetched and Generated files (Certs, etc)
+fetched_files/
+*.p12
+*.crt
+*.key
+*.pem

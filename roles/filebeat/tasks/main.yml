@@ -1,0 +1,183 @@
+- name: Import GPG-Key
+  ansible.builtin.rpm_key:
+    state: present
+    key: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+
+- name: Create elastic repo for Beats products to be available for download
+  ansible.builtin.template:
+    src: elastic_repo_for_filebeat.j2
+    dest: /etc/yum.repos.d/elastic.repo
+    mode: '0644'
+
+- name: Create filebeat group for filebeat user
+  ansible.builtin.group:
+    name: filebeat
+    state: present
+
+- name: Create filebeat system user
+  ansible.builtin.user:
+    name: filebeat
+    shell: /sbin/nologin
+    group: filebeat
+    groups:
+      - systemd-journal
+    append: true
+    create_home: no
+    system: true
+    state: present
+
+- name: Download Versionlock
+  ansible.builtin.dnf:
+    name: 'dnf-command(versionlock)'
+    state: present
+    update_cache: true
+
+- name: Download filebeat of required version
+  ansible.builtin.dnf:
+    name: "filebeat-{{ elk_stack_version }}"
+    state: present
+
+- name: Check for existing filebeat versionlock
+  ansible.builtin.command:
+    cmd: "grep -q '^filebeat-0:{{ elk_stack_version }}' /etc/dnf/plugins/versionlock.list"
+  register: versionlock_check
+  failed_when: false
+  changed_when: false
+
+- name: Add versionlock for filebeat
+  ansible.builtin.command:
+    cmd: "dnf versionlock add filebeat-{{ elk_stack_version }}"
+  when: versionlock_check.rc!= 0
+  changed_when: true
+
+- name: Refresh facts to find the new filebeat user
+  ansible.builtin.setup:
+
+- name: Set right permissions for /etc/filebeat directory
+  ansible.builtin.file:
+    path: /etc/filebeat
+    state: directory
+    owner: root
+    group: root
+    recurse: true
+    mode: '0755'
+
+- name: Create certs folder in Filebeat folder
+  ansible.builtin.file:
+    path: /etc/filebeat/certs
+    state: directory
+    owner: filebeat
+    group: filebeat
+    mode: '0755'
+
+- name: Change user and group of essential directories of filebeat to filebeat user and group
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: filebeat
+    group: filebeat
+    mode: '0755'
+    recurse: true
+  loop:
+    - /var/lib/filebeat
+    - /var/log/filebeat
+
+- name: Change config file for filebeat
+  ansible.builtin.template:
+    src: filebeat_config.j2
+    dest: /etc/filebeat/filebeat.yml
+    owner: root
+    group: filebeat
+    mode: '0640'
+  notify: Restart filebeat
+
+- name: Create override directory for filebeat service
+  ansible.builtin.file:
+    path: /etc/systemd/system/filebeat.service.d/
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Put override file into override directory
+  ansible.builtin.template:
+    src: override.conf.j2
+    dest: /etc/systemd/system/filebeat.service.d/override.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Restart system daemon
+    - Restart filebeat
+
+- name: Set ACL for existing files and directories in /var/log
+  ansible.posix.acl:
+    path: /var/log
+    entity: filebeat
+    etype: user
+    permissions: rX
+    state: present
+    recurse: yes
+
+- name: Set ACL for future files and directories in /var/log
+  ansible.posix.acl:
+    path: /var/log
+    entity: filebeat
+    etype: user
+    permissions: rX
+    default: yes
+    state: present
+
+- name: Copy CA cert on all filebeat machines
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/fetched_files/ca.crt"
+    dest: /etc/filebeat/certs/ca.crt
+    owner: filebeat
+    group: filebeat
+    mode: '0644'
+
+- name: Read encrypted filebeat password yml file, and save the password into separeted unencrypted variable
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/roles/filebeat/vars/filebeat_credentials.yml"
+
+- name: Read encrypted filebeat password yml file, and save the password into separeted unencrypted variable
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/roles/kibana/vars/elastic_credentials.yml"
+
+- name: Check if keystore should be created
+  ansible.builtin.stat:
+    path: /var/lib/filebeat/filebeat.keystore
+  register: keystore_created
+
+- name: Create keystore
+  ansible.builtin.shell: |
+    filebeat keystore create
+  when: not keystore_created.stat.exists
+  become_user: filebeat
+
+- name: Change permissions for keystore file to strict
+  ansible.builtin.file:
+    path: /var/lib/filebeat/filebeat.keystore
+    owner: filebeat
+    group: filebeat
+    mode: '0600'
+
+- name: Check if next task should run or not
+  ansible.builtin.shell: |
+    filebeat keystore list
+  register: filebeat_keystore_added
+  changed_when: false
+  become_user: filebeat
+
+- name: Pass filebeat_creds variable into filebeat-keystore
+  ansible.builtin.shell: |
+    filebeat keystore add BEATS_PWD --stdin
+  args:
+    stdin: "{{ filebeat_password }}"
+  when: "'BEATS_PWD' not in filebeat_keystore_added.stdout"
+  become_user: filebeat
+
+- name: Start and enable Filebeat service
+  ansible.builtin.service:
+    name: filebeat
+    state: started
+    enabled: true

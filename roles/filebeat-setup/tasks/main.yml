@@ -1,0 +1,49 @@
+- name: Read encrypted elastic superuser password
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/roles/kibana/vars/elastic_credentials.yml"
+  tags: always
+
+- name: check if next block should play or not
+  ansible.builtin.stat:
+    path: /var/lib/filebeat/setup_is_done
+  register: setup_is_done
+
+- name: SETUP BLOCK
+  block:
+
+    - name: Create temporary config file for filebeat setup
+      ansible.builtin.template:
+        src: filebeat-setup.yml.j2
+        dest: /etc/filebeat/filebeat-setup.tmp.yml
+        owner: root
+        group: filebeat
+        mode: '0640'
+      tags: create_config
+
+    - name: Run filebeat setup to load pipelines, dashboards, ilms e.t.c.
+      ansible.builtin.shell:
+        cmd: "sudo -u filebeat /usr/share/filebeat/bin/filebeat setup -c /etc/filebeat/filebeat-setup.tmp.yml --path.home /usr/share/filebeat --path.data /var/lib/filebeat --path.logs /var/log/filebeat --pipelines --dashboards --index-management"
+        creates: /var/lib/filebeat/setup_is_done
+      register: filebeat_setup_result
+      become: true
+      changed_when: filebeat_setup_result.rc == 0
+      tags: run_setup
+
+    - name: Display output
+      ansible.builtin.debug:
+        var: filebeat_setup_result
+
+  always:
+    - name: Remove temporary setup config file
+      ansible.builtin.file:
+        path: /etc/filebeat/filebeat-setup.tmp.yml
+        state: absent
+      tags: cleanup
+
+    - name: Create marker-file for idempotency
+      ansible.builtin.file:
+        path: /var/lib/filebeat/setup_is_done
+        state: touch
+        mode: '0644'
+
+  when: not setup_is_done.stat.exists

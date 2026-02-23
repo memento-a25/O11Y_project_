@@ -1,0 +1,25 @@
+apiVersion: 1
+datasources:
+  - name: Zabbix API
+    type: alexanderzobnin-zabbix-datasource
+    url: "https://{{ hostvars[groups['master'][0]]['ansible_host'] }}/api_jsonrpc.php"
+    jsonData:
+      zabbixVersion: 7
+      tlsAuthWithCACert: true
+      username: Admin
+      dbConnectionEnable: true
+      dbConnectionDatasourceName: "Zabbix DB"
+    secureJsonData:
+      tlsCACert: |
+        {{ ca_cert_content | indent(8) }}
+
+      password: "{{ zabbix_admin_password }}"
+
+  - name: "Zabbix DB"
+    type: mysql
+    url: localhost:3306
+    user: zabbix
+    jsonData:
+      database: zabbix
+    secureJsonData:
+      password: "{{ zabbix_db_password }}"

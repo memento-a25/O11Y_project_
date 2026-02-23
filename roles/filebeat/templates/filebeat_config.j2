@@ -1,0 +1,45 @@
+#==================== Filebeat Modules  =====================
+
+filebeat.modules:
+- module: system
+  syslog:
+    enabled: true
+  auth:
+    enabled: true
+
+#==================== General =====================
+
+setup.template.enabled: false
+setup.ilm.enabled: false
+setup.dashboards.enabled: false
+setup.pipeline.enabled: false
+
+#==================== Outputs =====================
+
+output.elasticsearch:
+  hosts: ["https://{{ hostvars[groups['elk'][0]]['ansible_host'] }}:9200"]
+  username: "filebeat_data_writer"
+  password: "${BEATS_PWD}"
+  ssl:
+    certificate_authorities: ["/etc/filebeat/certs/ca.crt"]
+
+#==================== Kibana =====================
+
+#setup.kibana:
+#  host: "https://{{ hostvars[groups['master'][0]]['ansible_host'] }}:5601"
+#  ssl:
+#    enabled: true
+#    certificate_authorities: [ "/etc/filebeat/certs/ca.crt" ]
+
+#  username: elastic
+#  password:
+
+#==================== Logging ====================
+
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /var/log/filebeat
+  name: filebeat
+  keepfiles: 7
+  permissions: 0644

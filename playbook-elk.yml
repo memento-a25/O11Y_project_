@@ -1,0 +1,24 @@
+---
+- hosts: elk
+  become: yes
+  roles:
+    - elasticsearch
+  tags: elasticsearch
+
+- hosts: master
+  become: yes
+  roles:
+    - kibana
+  tags: kibana
+
+- hosts: all
+  become: yes
+  roles:
+    - filebeat
+  tags: filebeat
+
+- hosts: master
+  become: yes
+  roles:
+    - filebeat-setup
+  tags: filebeat-setup

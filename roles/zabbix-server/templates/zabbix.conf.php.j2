@@ -1,0 +1,12 @@
+<?php
+// Zabbix GUI configuration file.
+
+$DB['TYPE']        = 'MYSQL';
+$DB['SERVER']      = 'localhost';
+$DB['PORT']        = '0';
+$DB['DATABASE']    = 'zabbix';
+$DB['USER']        = 'zabbix';
+$DB['PASSWORD']    = '{{ zabbix_db_password }}';
+
+// Zabbix server name
+$ZBX_SERVER_NAME   = '{{ inventory_hostname }}';

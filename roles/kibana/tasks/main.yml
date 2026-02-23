@@ -1,0 +1,144 @@
+- name: Import GPG-Key
+  ansible.builtin.rpm_key:
+    state: present
+    key: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+
+- name: Set up Kibana repository
+  ansible.builtin.template:
+    src: kibana.repo.j2
+    dest: /etc/yum.repos.d/kibana.repo
+    mode: '0644'
+
+- name: Download Versionlock
+  ansible.builtin.dnf:
+    name: 'dnf-command(versionlock)'
+    state: present
+    update_cache: true
+
+- name: Download kibana of required version
+  ansible.builtin.dnf:
+    name: "kibana-{{ elk_stack_version }}"
+    state: present
+
+- name: Check for existing kibana versionlock
+  ansible.builtin.command:
+    cmd: "grep -q '^kibana-0:{{ elk_stack_version }}' /etc/dnf/plugins/versionlock.list"
+  register: versionlock_check
+  failed_when: false
+  changed_when: false
+
+- name: Add versionlock for kibana
+  ansible.builtin.command:
+    cmd: "dnf versionlock add kibana-{{ elk_stack_version }}"
+  when: versionlock_check.rc!= 0
+  changed_when: true
+
+
+- name: Install Kibana from repo
+  ansible.builtin.dnf:
+    name: kibana
+    state: present
+
+- name: Create certs folder in Kibana folder
+  ansible.builtin.file:
+    path: /etc/kibana/certs
+    state: directory
+    owner: kibana
+    group: kibana
+    mode: '0755'
+
+- name: Copy kibana-http.crt to Kibana machine
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/fetched_files/kibana-http.crt"
+    dest: /etc/kibana/certs/kibana-http.crt
+    owner: kibana
+    group: kibana
+    mode: '0644'
+
+- name: Copy kibana-http.key to Kibana machine
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/fetched_files/kibana-http.key"
+    dest: /etc/kibana/certs/kibana-http.key
+    owner: root
+    group: kibana
+    mode: '0640'
+
+- name: Copy CA cert to Kibana machine to establishing trust
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/fetched_files/ca.crt"
+    dest: /etc/kibana/certs/ca.crt
+    owner: root
+    group: kibana
+    mode: '0640'
+
+- name: Delete cert and private key files from Ansible machine for security
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ playbook_dir }}/fetched_files/kibana-http.key"
+    - "{{ playbook_dir }}/fetched_files/kibana-http.crt"
+  delegate_to: 127.0.0.1
+
+- name: Read encrypted kibana password yml file, and save the password into separated unencrypted variable
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/roles/kibana/vars/kibana_credentials.yml"
+
+- name: Check if next task should run or not
+  ansible.builtin.shell: |
+   /usr/share/kibana/bin/kibana-keystore list
+  register: kibana_keystore_added
+
+- name: Create keystore and store kibana_system password here
+  block:
+    - name: Check if keystore should be created
+      ansible.builtin.stat:
+        path: /etc/kibana/kibana.keystore
+      register: kibana_keystore_created
+
+    - name: Create elastic keystore
+      ansible.builtin.shell: |
+        /usr/share/kibana/bin/kibana-keystore create
+      when: not kibana_keystore_created.stat.exists
+
+    - name: Pass kibana_password variable into kibana-keystore
+      ansible.builtin.shell: |
+        /usr/share/kibana/bin/kibana-keystore add elasticsearch.password -x
+      args:
+        stdin: "{{ kibana_password }}"
+
+  when: "'elasticsearch.password' not in kibana_keystore_added.stdout"
+
+- name: Replace config file with template
+  ansible.builtin.template:
+    src: kibana-config.j2
+    dest: /etc/kibana/kibana.yml
+    owner: kibana
+    group: kibana
+    mode: '0640'
+  notify: Restart kibana
+
+- name: Open required Firewall ports
+  ansible.posix.firewalld:
+    port: "{{ item }}"
+    state: enabled
+    permanent: true
+    immediate: true
+  loop: "{{ kibana_firewalld_ports }}"
+
+- name: Start and enable Kibana service
+  ansible.builtin.service:
+    name: kibana
+    state: started
+    enabled: true
+
+- name: Clean up temporary Kibana certs and private keys from elk-node
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/elasticsearch/certs/kibana-http.key
+    - /etc/elasticsearch/certs/kibana-http.crt
+  delegate_to: "{{ groups['elk'][0] }}"
+  become: yes
+  run_once: true

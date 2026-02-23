@@ -1,0 +1,10 @@
+# Set 40% of available RAM to the java heap, but no more than 4gb
+# This is safe starting values
+
+{% set heap_size = (ansible_memtotal_mb * 0.4) | round | int %}
+{% if heap_size > 4096 %}
+  {% set heap_size = 4096 %} 
+{% endif %}
+
+-Xms{{ heap_size }}m
+-Xmx{{ heap_size }}m

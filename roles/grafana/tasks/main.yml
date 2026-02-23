@@ -1,0 +1,72 @@
+- name: Import GPG-key
+  ansible.builtin.rpm_key:
+    state: present
+    key: https://rpm.grafana.com/gpg.key
+
+- name: Create .repo file and fill it with necessary data
+  ansible.builtin.template:
+    src: grafana-repo.j2
+    dest: /etc/yum.repos.d/grafana.repo
+    mode: '0644'
+
+- name: Install Grafana
+  ansible.builtin.dnf:
+    name: grafana
+    state: present
+    update_cache: true
+  notify: Reload systemd daemon
+
+- name: Install Zabbix plugin for Grafana
+  community.grafana.grafana_plugin:
+    name: alexanderzobnin-zabbix-app
+    state: present
+
+- name: Read and parse CA certificate content
+  ansible.builtin.set_fact:
+    ca_cert_content: "{{ lookup('file', playbook_dir ~ '/fetched_files/ca.crt') | regex_search('(?s)(-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----)', '\\1') | first | trim }}"
+
+- name: Provision zabbix-grafana connection plugin into Grafana
+  ansible.builtin.template:
+    src: zabbix-plugin-provision.j2
+    dest: /etc/grafana/provisioning/plugins/zabbix-grafana-plugin.yaml
+    mode: '0640'
+    owner: root
+    group: grafana
+
+- name: Provision Elasticsearch datasource into Grafana
+  ansible.builtin.template:
+    src: elastic-datasource.j2
+    dest: /etc/grafana/provisioning/datasources/elastic.yaml
+    mode: '0640'
+    owner: root
+    group: grafana
+
+- name: Provision Zabbix datasource into Grafana
+  ansible.builtin.template:
+    src: zabbix-datasource.j2
+    dest: /etc/grafana/provisioning/datasources/zabbix.yaml
+    mode: '0640'
+    owner: root
+    group: grafana
+  notify: Restart grafana
+
+- name: Allow Grafana port in firewalld
+  ansible.posix.firewalld:
+    port: 3000/tcp
+    permanent: true
+    state: enabled
+    immediate: true
+
+- name: Set correct ownership for plugins directory
+  ansible.builtin.file:
+    path: /var/lib/grafana/plugins
+    owner: grafana
+    group: grafana
+    state: directory
+
+- name: Start and enable grafana service
+  ansible.builtin.service:
+    name: grafana-server
+    state: started
+    enabled: true
+

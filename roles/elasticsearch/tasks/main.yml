@@ -1,0 +1,529 @@
+- name: Open required Firewall ports
+  ansible.posix.firewalld:
+    port: "{{ item }}"
+    state: enabled
+    permanent: true
+    immediate: true
+  loop: "{{ elasticsearch_firewalld_ports }}"
+
+- name: Making sure semanage, checkmodule and rng-tools (for generating entropy) is available on system
+  ansible.builtin.dnf:
+    name:
+      - policycoreutils-python-utils
+      - checkpolicy
+      - rng-tools
+    update_cache: true
+    state: present
+
+- name: Start and enable rng-tools
+  ansible.builtin.service:
+    name: rngd
+    state: started
+    enabled: true
+
+- name: Import GPG-Key
+  ansible.builtin.rpm_key:
+    state: present
+    key: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+
+- name: Create .repo file and fill it with required information
+  ansible.builtin.template:
+    src: elasticsearch-repo.j2
+    dest: /etc/yum.repos.d/elasticsearch.repo
+    mode: '0644'
+
+- name: Download Versionlock
+  ansible.builtin.dnf:
+    name: 'dnf-command(versionlock)'
+    state: present
+
+- name: Download elasticsearch of required version
+  ansible.builtin.dnf:
+    name: "elasticsearch-{{ elk_stack_version }}"
+    enablerepo: elasticsearch
+    state: present
+
+- name: Check for existing elasticsearch versionlock
+  ansible.builtin.command:
+    cmd: "grep -q '^elasticsearch-0:{{ elk_stack_version }}' /etc/dnf/plugins/versionlock.list"
+  register: versionlock_check
+  failed_when: false
+  changed_when: false
+
+- name: Add versionlock for elasticsearch
+  ansible.builtin.command:
+    cmd: "dnf versionlock add elasticsearch-{{ elk_stack_version }}"
+  when: versionlock_check.rc!= 0
+  changed_when: true
+
+- name: Set a dynamic JVM heap size to prevent hanging on low-memory VMs
+  ansible.builtin.template:
+    src: ansible_heap.conf.j2
+    dest: /etc/elasticsearch/jvm.options.d/ansible_heap.conf
+    owner: root
+    group: elasticsearch
+    mode: '0660'
+
+- name: Create /etc/elasticsearch/certs directory if it is not created yet
+  ansible.builtin.file:
+    path: /etc/elasticsearch/certs
+    state: directory
+    mode: '0755'
+    recurse: yes
+    owner: elasticsearch
+    group: elasticsearch
+
+- name: Define if manual security block should be played
+  ansible.builtin.stat:
+    path: /etc/elasticsearch/certs/elastic-stack-ca.p12
+  register: CA_file_created
+
+- name: Elasticsearch manual security block
+  block:
+
+    - name: Generate CA for cluster using certutil tool
+      ansible.builtin.shell: >
+        /usr/share/elasticsearch/bin/elasticsearch-certutil ca --silent
+        --out /etc/elasticsearch/certs/elastic-stack-ca.p12
+        --pass "{{ p12_CA_pass }}"
+
+    - name: Generate transport certificate for cluster
+      ansible.builtin.shell: >
+        /usr/share/elasticsearch/bin/elasticsearch-certutil cert --silent
+        --name "{{ inventory_hostname }}"
+        --dns "{{ inventory_hostname }},localhost"
+        --ip "{{ ansible_host }},127.0.0.1"
+        --pass "{{ p12_cert_pass }}"
+        --ca /etc/elasticsearch/certs/elastic-stack-ca.p12
+        --ca-pass "{{ p12_CA_pass }}"
+        --out /etc/elasticsearch/certs/elastic-certificates.p12
+
+    - name: Generate HTTP certificate for elasticsearch
+      ansible.builtin.shell: >
+        /usr/share/elasticsearch/bin/elasticsearch-certutil cert --silent
+        --name elasticsearch-http
+        --dns "{{ hostvars[groups['elk'][0]]['inventory_hostname'] }},localhost"
+        --ip "{{ hostvars[groups['elk'][0]]['ansible_host'] }},127.0.0.1"
+        --pass "{{ p12_http_elasticsearch_pass }}"
+        --ca /etc/elasticsearch/certs/elastic-stack-ca.p12
+        --ca-pass "{{ p12_CA_pass }}"
+        --out /etc/elasticsearch/certs/elastic-http.p12
+
+    - name: Set HTTPS for Kibana
+      ansible.builtin.shell: >
+        /usr/share/elasticsearch/bin/elasticsearch-certutil cert --silent
+        --name kibana-http
+        --dns "{{ hostvars[groups['master'][0]]['inventory_hostname'] }},localhost"
+        --ip "{{ hostvars[groups['master'][0]]['ansible_host'] }},127.0.0.1"
+        --pass "{{ p12_http_kibana_pass }}"
+        --ca /etc/elasticsearch/certs/elastic-stack-ca.p12
+        --ca-pass "{{ p12_CA_pass }}"
+        --out /etc/elasticsearch/certs/kibana-http.p12
+
+    - name: Generate HTTP certificate for Zabbix
+      ansible.builtin.shell: >
+        /usr/share/elasticsearch/bin/elasticsearch-certutil cert --silent
+        --name zabbix-http
+        --dns "{{ hostvars[groups['master'][0]]['inventory_hostname'] }},localhost"
+        --ip "{{ hostvars[groups['master'][0]]['ansible_host'] }},127.0.0.1"
+        --pass "{{ p12_http_zabbix_pass }}"
+        --ca /etc/elasticsearch/certs/elastic-stack-ca.p12
+        --ca-pass "{{ p12_CA_pass }}"
+        --out /etc/elasticsearch/certs/zabbix-http.p12
+
+    - name: Check if elasticsearch keystore exists
+      ansible.builtin.stat:
+        path: /etc/elasticsearch/elasticsearch.keystore
+      register: keystore_file
+
+    - name: Create elastic keystore
+      ansible.builtin.shell: |
+        /usr/share/elasticsearch/bin/elasticsearch-keystore create
+      when: not keystore_file.stat.exists
+
+    - name: Add transport password to elastic keystore
+      ansible.builtin.shell: |
+        /usr/share/elasticsearch/bin/elasticsearch-keystore add xpack.security.transport.ssl.keystore.secure_password -xf
+      args:
+        stdin: "{{ p12_cert_pass }}"
+
+# Uncomment if using mTLS for HTTP, do same for elasticsearch config template, but for mTLS you will have to manually configure it, this automation does not support it
+#    - name: Add HTTP password to elastic truststore
+#      ansible.builtin.shell: |
+#        /usr/share/elasticsearch/bin/elasticsearch-keystore add xpack.security.http.ssl.truststore.secure_password --stdin
+#      args:
+#        stdin: "{{ p12_CA_pass }}"
+
+    - name: Add http password to elastic keystore
+      ansible.builtin.shell: |
+        /usr/share/elasticsearch/bin/elasticsearch-keystore add xpack.security.http.ssl.keystore.secure_password -xf
+      args:
+        stdin: "{{ p12_http_elastic_secure_container_pass }}"
+
+  when: not CA_file_created.stat.exists
+
+- name: Extract CA cert file out of elastic-stack-ca.p12 container
+  ansible.builtin.shell: >-
+    openssl pkcs12 -in /etc/elasticsearch/certs/elastic-stack-ca.p12
+    -out /etc/elasticsearch/certs/ca.crt
+    -clcerts
+    -nokeys
+    -nodes
+    -passin pass:"{{ p12_CA_pass }}"
+  args:
+    creates: /etc/elasticsearch/certs/ca.crt
+
+- name: Extract key out of elastic-http container file
+  ansible.builtin.shell: >-
+    openssl pkcs12 -in /etc/elasticsearch/certs/elastic-http.p12
+    -out /etc/elasticsearch/certs/elastic-http.key
+    -nocerts
+    -nodes
+    -passin pass:"{{ p12_http_elasticsearch_pass }}"
+  args:
+    creates: /etc/elasticsearch/certs/elastic-http.key
+
+- name: Extract cert out of elastic-http container file
+  ansible.builtin.shell: >-
+    openssl pkcs12 -in /etc/elasticsearch/certs/elastic-http.p12
+    -out /etc/elasticsearch/certs/elastic-http.crt
+    -nokeys
+    -nodes
+    -passin pass:"{{ p12_http_elasticsearch_pass }}"
+  args:
+    creates: /etc/elasticsearch/certs/elastic-http.crt
+
+- name: Extract key out of zabbix-http container file
+  ansible.builtin.shell: >-
+    openssl pkcs12 -in /etc/elasticsearch/certs/zabbix-http.p12
+    -out /etc/elasticsearch/certs/zabbix-http.key
+    -nocerts
+    -nodes
+    -passin pass:"{{ p12_http_zabbix_pass }}"
+  args:
+    creates: /etc/elasticsearch/certs/zabbix-http.key
+
+- name: Extract cert out of zabbix-http container file
+  ansible.builtin.shell: >-
+    openssl pkcs12 -in /etc/elasticsearch/certs/zabbix-http.p12
+    -out /etc/elasticsearch/certs/zabbix-http.crt
+    -nokeys
+    -nodes
+    -passin pass:"{{ p12_http_zabbix_pass }}"
+  args:
+    creates: /etc/elasticsearch/certs/zabbix-http.crt
+
+- name: Parse kibana-http.p12 into kibana-http.crt
+  ansible.builtin.shell: >-
+    openssl pkcs12 -in /etc/elasticsearch/certs/kibana-http.p12
+    -out /etc/elasticsearch/certs/kibana-http.crt
+    -clcerts
+    -nokeys
+    -nodes
+    -passin pass:"{{ p12_http_kibana_pass }}"
+  args:
+    creates: /etc/elasticsearch/certs/kibana-http.crt
+
+- name: Parse kibana-http.p12 into kibana-http.key
+  ansible.builtin.shell: >-
+    openssl pkcs12 -in /etc/elasticsearch/certs/kibana-http.p12
+    -out /etc/elasticsearch/certs/kibana-http.key
+    -nocerts
+    -nodes
+    -passin pass:"{{ p12_http_kibana_pass }}"
+  args:
+    creates: /etc/elasticsearch/certs/kibana-http.key
+
+- name: Check if next block should run of not
+  ansible.builtin.stat:
+    path: /etc/elasticsearch/certs/secure_containers_created
+  register: secure_containers_created
+
+- name: Make secure .p12 container for http elastic and kibana node certificates and keys
+  block:
+    - name: Make secure .p12 container for http elastic node certificate and key
+      ansible.builtin.shell: >-
+        openssl pkcs12 -export
+        -in /etc/elasticsearch/certs/elastic-http.crt
+        -inkey /etc/elasticsearch/certs/elastic-http.key
+        -out /etc/elasticsearch/certs/elastic-http-node-cert_and_key-container.p12
+        -passout pass:"{{ p12_http_elastic_secure_container_pass }}"
+        -name "elastic-node"
+
+    - name: Create marker-file for idempotency
+      ansible.builtin.file:
+        path: /etc/elasticsearch/certs/secure_containers_created
+        state: touch
+        owner: elasticsearch
+        group: elasticsearch
+        mode: '0644'
+
+  when: not secure_containers_created.stat.exists
+
+
+- name: Fetch CA file from elk-node to the host machine
+  ansible.builtin.fetch:
+    src: /etc/elasticsearch/certs/ca.crt
+    dest: "{{ playbook_dir }}/fetched_files/"
+    flat: true
+
+- name: Fetch kibana http cert file from elk-node to the host machine
+  ansible.builtin.fetch:
+    src: /etc/elasticsearch/certs/kibana-http.crt
+    dest: "{{ playbook_dir }}/fetched_files/"
+    flat: true
+
+- name: Fetch kibana http key file from elk-node to the host machine
+  ansible.builtin.fetch:
+    src: /etc/elasticsearch/certs/kibana-http.key
+    dest: "{{ playbook_dir }}/fetched_files/"
+    flat: true
+
+- name: Fetch zabbix http cert file from elk-node to the host machie
+  ansible.builtin.fetch:
+    src: /etc/elasticsearch/certs/zabbix-http.crt
+    dest: "{{ playbook_dir }}/fetched_files/"
+    flat: true
+
+- name: Fetch zabbix http key file from elk-node to the host machine
+  ansible.builtin.fetch:
+    src: /etc/elasticsearch/certs/zabbix-http.key
+    dest: "{{ playbook_dir }}/fetched_files/"
+    flat: true
+
+- name: Change basic elasticsearch config file
+  ansible.builtin.template:
+    src: elasticsearch-config.j2
+    dest: /etc/elasticsearch/elasticsearch.yml
+    mode: '0644'
+  notify: Restart elasticsearch
+
+- name: Change owner and group of /etc/elasticsearch/certs again
+  ansible.builtin.file:
+    path: /etc/elasticsearch/certs
+    state: directory
+    recurse: yes
+    owner: elasticsearch
+    group: elasticsearch
+
+- name: Restore SELinux context for certificates directory
+  ansible.builtin.command: restorecon -R /etc/elasticsearch/certs
+  changed_when: false
+
+- name: Enable and start elasticseach service
+  ansible.builtin.service:
+    name: elasticsearch
+    state: started
+    enabled: true
+
+- name: Define if next block should run or not
+  ansible.builtin.stat:
+    path: /etc/elasticsearch/elastic_password_set_marker
+  register: marker
+
+- name: Generate superuser password, store it, create marker file, display superuser password on screen
+  block:
+
+    - name: Wait for elastic cluster to start listening on 9200 port
+      ansible.builtin.wait_for:
+        port: 9200
+        delay: 5
+
+    - name: Generate superuser password and store it
+      ansible.builtin.shell:
+        cmd: /usr/share/elasticsearch/bin/elasticsearch-reset-password --url "https://{{ ansible_host }}:9200" -u elastic -b -s
+      register: superuser_pass
+
+    - name: Create marker-file for generate-superuser-password task to be idempotent
+      ansible.builtin.file:
+        path: /etc/elasticsearch/elastic_password_set_marker
+        state: touch
+        mode: '0644'
+
+    - name: Set variable for elastic password
+      ansible.builtin.set_fact:
+        elastic_password: "{{ superuser_pass.stdout }}"
+
+    - name: Copy and encrypt superuser password on ansible controller machine
+      ansible.builtin.copy:
+        content: "elastic_password: '{{ elastic_password }}'"
+        dest: /tmp/elastic_pass.yml
+      delegate_to: 127.0.0.1
+      become: false
+
+    - name: Encrypt elastic_pass.yml file
+      ansible.builtin.command:
+        cmd:  >-
+          ansible-vault encrypt /tmp/elastic_pass.yml
+          --output "{{ playbook_dir }}/roles/kibana/vars/elastic_credentials.yml"
+          --vault-password-file .vault_pass
+      delegate_to: 127.0.0.1
+      become: false
+
+    - name: Delete remaining unencrypted file from system
+      ansible.builtin.file:
+        path: /tmp/elastic_pass.yml
+        state: absent
+      delegate_to: 127.0.0.1
+      become: false
+
+
+  when: not marker.stat.exists
+
+- name: Define if next block should run or not
+  ansible.builtin.stat:
+    path: /etc/elasticsearch/kibana_password_set_marker
+  register: marker_kibana
+
+- name: Kibana reset password block
+  block:
+
+    - name: Generate kibana password and store it
+      ansible.builtin.shell:
+        cmd: /usr/share/elasticsearch/bin/elasticsearch-reset-password --url "https://{{ ansible_host }}:9200" -u kibana_system -b -s
+      register: kibana_user_pass
+
+    - name: Create marker-file for generate-kibana_system-password task to be idempotent
+      ansible.builtin.file:
+        path: /etc/elasticsearch/kibana_password_set_marker
+        state: touch
+        mode: '0644'
+
+    - name: Set variable for kibana password
+      ansible.builtin.set_fact:
+        kibana_password: "{{ kibana_user_pass.stdout }}"
+
+    - name: Copy and encrypt kibana password on ansible controller machine
+      ansible.builtin.copy:
+        content: "kibana_password: '{{ kibana_password }}'"
+        dest: /tmp/kibana_pass.yml
+      delegate_to: 127.0.0.1
+      become: false
+
+    - name: Encrypt kibana_pass.yml file
+      ansible.builtin.command:
+        cmd:  >-
+          ansible-vault encrypt /tmp/kibana_pass.yml
+          --output "{{ playbook_dir }}/roles/kibana/vars/kibana_credentials.yml"
+          --vault-password-file .vault_pass
+      delegate_to: 127.0.0.1
+      become: false
+
+    - name: Delete remaining unencrypted file from system
+      ansible.builtin.file:
+        path: /tmp/kibana_pass.yml
+        state: absent
+      delegate_to: 127.0.0.1
+      become: false
+
+  when: not marker_kibana.stat.exists
+
+- name: Read encrypted filebeat password yml file, and save the password into separeted unencrypted variable
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/roles/kibana/vars/elastic_credentials.yml"
+
+- name: Create role
+  ansible.builtin.uri:
+    url: "https://{{ ansible_host }}:9200/_security/role/filebeat_writer"
+    user: elastic
+    password: "{{ elastic_password }}"
+    method: PUT
+    return_content: true
+    force_basic_auth: true
+    validate_certs: false
+    status_code: [ 200, 201 ]
+    headers:
+      Content-Type: application/json
+    body_format: json
+    body:
+      {
+        "cluster": [ "read_ilm", "monitor", "read_pipeline" ],
+         "indices": [
+             {
+                "names": [ "filebeat-*", "logs-*" ],
+                "privileges": [ "create_index", "create_doc", "auto_configure" ],
+                "allow_restricted_indices": false
+             }
+        ]
+      }
+  register: role_creation_result
+  changed_when: role_creation_result.status == 201
+
+- name: Assign new role to filebeat_data_writer user
+  ansible.builtin.uri:
+    url: "https://{{ ansible_host }}:9200/_security/user/filebeat_data_writer"
+    user: elastic
+    password: "{{ elastic_password }}"
+    method: PUT
+    return_content: true
+    force_basic_auth: true
+    validate_certs: false
+    status_code: [ 200, 201 ]
+    headers:
+      Content-Type: application/json
+    body_format: json
+    body:
+      {
+        "password": "temp_pass_123",
+        "roles": ["beats_system", "filebeat_writer"]
+      }
+  register: role_assign_result
+  changed_when: role_assign_result.status == 201
+
+- name: Define if next block should run or not
+  ansible.builtin.stat:
+    path: /etc/elasticsearch/filebeat_password_set_marker
+  register: marker_filebeat
+
+- name: Filebeat reset password block
+  block:
+
+    - name: Generate filebeat password and store it
+      ansible.builtin.shell:
+        cmd: /usr/share/elasticsearch/bin/elasticsearch-reset-password --url "https://{{ ansible_host }}:9200" -u filebeat_data_writer -b -s
+      register: filebeat_user_pass
+
+    - name: Create marker-file for generate-beats_system-password task to be idempotent
+      ansible.builtin.file:
+        path: /etc/elasticsearch/filebeat_password_set_marker
+        state: touch
+        mode: '0644'
+
+    - name: Set variable for filebeat password
+      ansible.builtin.set_fact:
+        filebeat_password: "{{ filebeat_user_pass.stdout }}"
+
+    - name: Copy and encrypt filebeat password on ansible controller machine
+      ansible.builtin.copy:
+        content: "filebeat_password: '{{ filebeat_password }}'"
+        dest: /tmp/filebeat_pass.yml
+      delegate_to: 127.0.0.1
+      become: false
+
+    - name: Encrypt filebeat_pass.yml file
+      ansible.builtin.command:
+        cmd:  >-
+          ansible-vault encrypt /tmp/filebeat_pass.yml
+          --output "{{ playbook_dir }}/roles/filebeat/vars/filebeat_credentials.yml"
+          --vault-password-file .vault_pass
+      delegate_to: 127.0.0.1
+      become: false
+
+    - name: Delete remaining unencrypted file from system
+      ansible.builtin.file:
+        path: /tmp/filebeat_pass.yml
+        state: absent
+      delegate_to: 127.0.0.1
+      become: false
+
+  when: not marker_filebeat.stat.exists
+
+- name: Delete junk/leftover files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/elasticsearch/certs/elastic-http.key
+    - /etc/elasticsearch/certs/elastic-http.crt
+
+

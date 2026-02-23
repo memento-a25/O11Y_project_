@@ -1,0 +1,10 @@
+module zabbix_agent_local 1.0;
+
+require {
+	type zabbix_port_t;
+	type zabbix_agent_t;
+	class tcp_socket name_bind;
+}
+
+#============= zabbix_agent_t ==============
+allow zabbix_agent_t zabbix_port_t:tcp_socket name_bind;

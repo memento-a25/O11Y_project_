@@ -1,0 +1,4 @@
+kibana_firewalld_ports:
+  - '5601/tcp'
+
+elk_stack_version: "9.1.2"

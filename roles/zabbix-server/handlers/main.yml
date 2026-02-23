@@ -1,0 +1,23 @@
+- name: Restart zabbix-server
+  ansible.builtin.service:
+    name: zabbix-server
+    state: restarted
+    enabled: yes
+
+- name: Restart zabbix-agent
+  ansible.builtin.service:
+    name: zabbix-agent
+    state: restarted
+    enabled: yes
+
+- name: Restart nginx
+  ansible.builtin.service:
+    name: nginx
+    state: restarted
+    enabled: yes
+
+- name: Restart php-fpm
+  ansible.builtin.service:
+    name: php-fpm
+    state: restarted
+    enabled: yes

@@ -1,0 +1,6 @@
+---
+zabbix_agent_firewalld_port: '10050/tcp'
+
+zabbix_SELinux_ports:
+  - '10050'
+  - '10051'
