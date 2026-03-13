@@ -21,11 +21,20 @@
     state: present
   loop: "{{ zabbix_SELinux_ports }}"
 
+- name: Create system directory for all SELinux-related files
+  ansible.builtin.file:
+    path: /etc/selinux/local
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
 - name: Copy SELinux text file on to machines
   ansible.builtin.copy:
     src: zabbix_agent_local.te
-    dest: /tmp/
+    dest: /etc/selinux/local
     mode: '0644'
+  register: te_file
 
 - name: Check if zabbix_agent_local is in SEmodule list on system
   ansible.builtin.shell: |
@@ -36,10 +45,35 @@
 
 - name: Compile and integrate SELinux rules for zabbix
   ansible.builtin.shell: |
-    checkmodule -M -m -o /tmp/zabbix_agent_local.mod /tmp/zabbix_agent_local.te
-    semodule_package -o /tmp/zabbix_agent_local.pp -m /tmp/zabbix_agent_local.mod
-    semodule -i /tmp/zabbix_agent_local.pp
-  when: "'zabbix_agent_local' not in zabbix_se.stdout"
+    checkmodule -M -m -o /etc/selinux/local/zabbix_agent_local.mod /etc/selinux/local/zabbix_agent_local.te
+    semodule_package -o /etc/selinux/local/zabbix_agent_local.pp -m /etc/selinux/local/zabbix_agent_local.mod
+    semodule -i /etc/selinux/local/zabbix_agent_local.pp
+  when: >
+    te_file.changed or
+    "'zabbix_agent_local' not in zabbix_se.stdout"
+
+- name: Copy SELinux text file on to machines
+  ansible.builtin.copy:
+    src: zabbix_agent2_local.te
+    dest: /etc/selinux/local
+    mode: '0644'
+  register: te_file2
+
+- name: Check if zabbix_agent2_local is in SEmodule list on system
+  ansible.builtin.shell: |
+    semodule -l | grep zabbix_agent2_local
+  register: zabbix2_se
+  ignore_errors: true
+  changed_when: false
+
+- name: Compile and integrate SELinux rules for zabbix one more time
+  ansible.builtin.shell: |
+    checkmodule -M -m -o /etc/selinux/local/zabbix_agent2_local.mod /etc/selinux/local/zabbix_agent2_local.te
+    semodule_package -o /etc/selinux/local/zabbix_agent2_local.pp -m /etc/selinux/local/zabbix_agent2_local.mod
+    semodule -i /etc/selinux/local/zabbix_agent2_local.pp
+  when: >
+    te_file2.changed or
+    "'zabbix_agent2_local' not in zabbix2_se.stdout"
 
 - name: Import GPG-Key
   ansible.builtin.rpm_key:
