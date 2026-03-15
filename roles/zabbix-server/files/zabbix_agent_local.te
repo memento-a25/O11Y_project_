@@ -4,8 +4,13 @@ module zabbix_agent_local 1.0;
 require {
 	type zabbix_port_t;
 	type zabbix_agent_t;
+	type rpm_exec_t;
+	type proc_kcore_t;
 	class tcp_socket name_bind;
+	class file { execute execute_no_trans getattr map read open };
 }
 
 #============= zabbix_agent_t ==============
 allow zabbix_agent_t zabbix_port_t:tcp_socket name_bind;
+allow zabbix_agent_t rpm_exec_t:file { execute execute_no_trans getattr map read open };
+allow zabbix_agent_t proc_kcore_t:file getattr;

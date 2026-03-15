@@ -1,0 +1,89 @@
+- name: Create prometheus user
+  ansible.builtin.user:
+    name: prometheus
+    group: prometheus
+    shell: /sbin/nologin
+    system: true
+    state: present
+
+- name: Make a directory
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: prometheus
+    group: prometheus
+    mode: '0755'
+    state: directory
+  loop:
+    - /etc/prometheus
+    - /etc/blackbox_exporter
+    - /etc/alertmanager
+    - /var/lib/prometheus
+
+- name: Download prometheus and co
+  ansible.builtin.get_url:
+    url: "{{ item.url }}"
+    dest: /tmp
+    checksum: "sha256:{{ item.checksum }}"
+  loop:
+    - { url: 'https://github.com/prometheus/prometheus/releases/download/v{{ prometheus.version }}/prometheus-{{ prometheus.version }}.linux-amd64.tar.gz', checksum: '{{ prometheus.checksum }}' }
+    - { url: 'https://github.com/prometheus/alertmanager/releases/download/v{{ alertmanager.version }}/alertmanager-{{ alertmanager.version }}.linux-amd64.tar.gz', checksum: '{{ alertmanager.checksum }}' }
+    - { url: 'https://github.com/prometheus/blackbox_exporter/releases/download/v{{ blackbox.version }}/blackbox_exporter-{{ blackbox.version }}.linux-amd64.tar.gz', checksum: '{{ blackbox.checksum }}' }
+    - { url: 'https://github.com/prometheus/mysqld_exporter/releases/download/v{{ mysqld.version }}/mysqld_exporter-{{ mysqld.version }}.linux-amd64.tar.gz', checksum: '{{ mysqld.checksum }}' }
+    - { url: 'https://github.com/prometheus/promlens/releases/download/v{{ promlens.version }}/promlens-{{ promlens.version }}.linux-amd64.tar.gz', checksum: '{{ promlens.checksum }}' }
+    - { url: 'https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter.version }}/node_exporter-{{ node_exporter.version }}.linux-amd64.tar.gz', checksum: '{{ node_exporter.checksum }}' }
+
+- name: Extract all of the binaries
+  ansible.builtin.unarchive:
+    src: "/tmp/{{ item }}"
+    dest: /tmp/
+    remote_src: yes
+  loop:
+    - "prometheus-{{ prometheus.version }}.linux-amd64.tar.gz"
+    - "alertmanager-{{ alertmanager.version }}.linux-amd64.tar.gz"
+    - "blackbox_exporter-{{ blackbox.version }}.linux-amd64.tar.gz"
+    - "mysqld_exporter-{{ mysqld.version }}.linux-amd64.tar.gz"
+    - "promlens-{{ promlens.version }}.linux-amd64.tar.gz"
+    - "node_exporter-{{ node_exporter.version }}.linux-amd64.tar.gz"
+
+- name: Move binaries
+  ansible.builtin.copy:
+    src: "/tmp/{{ item }}"
+    dest: /usr/local/bin
+    owner: prometheus
+    group: prometheus
+    mode: '0755'
+    remote_src: yes
+  loop:
+    - "prometheus-{{ prometheus.version }}.linux-amd64/prometheus"
+    - "prometheus-{{ prometheus.version }}.linux-amd64/promtool"
+    - "alertmanager-{{ alertmanager.version }}.linux-amd64/alertmanager"
+    - "alertmanager-{{ alertmanager.version }}.linux-amd64/amtool"
+    - "blackbox_exporter-{{ blackbox.version }}.linux-amd64/blackbox_exporter"
+    - "mysqld_exporter-{{ mysqld.version }}.linux-amd64/mysqld_exporter"
+    - "promlens-{{ promlens.version }}.linux-amd64/promlens"
+    - "node_exporter-{{ node_exporter.version }}.linux-amd64/node_exporter"
+
+- name: Move config files
+  ansible.builtin.copy:
+    src: "/tmp/{{ item.from }}"
+    dest: "/etc/{{ item.to }}"
+    owner: prometheus
+    group: prometheus
+    mode: '0644'
+    remote_src: yes
+  loop:
+    - { from: 'prometheus-{{ prometheus.version }}.linux-amd64/prometheus.yml', to: 'prometheus' }
+    - { from: 'alertmanager-{{ alertmanager.version }}.linux-amd64/alertmanager.yml', to: 'alertmanager' }
+    - { from: 'blackbox_exporter-{{ blackbox.version }}.linux-amd64/blackbox.yml', to: 'blackbox_exporter' }
+
+- name: Create Unit file for prometheus
+  ansible.builtin.template:
+    src: prometheus-service.j2
+    dest: /etc/systemd/system/prometheus.service
+    mode: '0644'
+
+- name: Start and enable prometheus service
+  ansible.builtin.service:
+    name: prometheus
+    state: started
+    enabled: yes

@@ -1,0 +1,17 @@
+[Unit]
+
+Description=Prometheus Service for Monitoring
+
+After=network.target
+
+[Service]
+
+ExecStart=/usr/local/bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/var/lib/prometheus
+
+Type=simple
+Restart=always
+User=prometheus
+Group=prometheus
+
+[Install]
+WantedBy=multi-user.target

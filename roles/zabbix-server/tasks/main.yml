@@ -10,6 +10,10 @@
   ansible.builtin.rpm_key:
     state: present
     key: https://repo.zabbix.com/RPM-GPG-KEY-ZABBIX-B5333005
+  register: gpg_result
+  until: gpg_result is succeeded
+  retries: 5
+  delay: 5
 
 - name: Enable CRB repository for dependencies
   ansible.builtin.shell: dnf config-manager --set-enabled crb
@@ -30,6 +34,11 @@
   ansible.builtin.dnf:
     name: 'https://repo.zabbix.com/zabbix/7.0/alma/9/x86_64/zabbix-release-latest-7.0.el9.noarch.rpm'
     state: present
+  register: release_result
+  until: release_result is succeeded
+  retries: 5
+  delay: 5
+
 
 - name: Clear dnf cache for system to re-read package lists
   ansible.builtin.shell: dnf clean all

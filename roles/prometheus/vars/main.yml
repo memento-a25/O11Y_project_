@@ -1,0 +1,18 @@
+prometheus:
+  version: "3.10.0"
+  checksum: "41c50d97bb6a181623fc89d3fe61d0cc68ee69cc93da9091b8bba005f9690122"
+alertmanager:
+  version: "0.31.1"
+  checksum: "35191cbd9d4f8162458b78dd7e93990cccd246044d9a6f788adb1c66ac3ea07b"
+blackbox:
+  version: "0.28.0"
+  checksum: "caf5d242fb1cf6d5cb678f3f799f22703d4fafea26b03dcbbd7e1f1825e06329"
+mysqld:
+  version: "0.18.0"
+  checksum: "46e8f45654352bdd42d162b2b4a68f00055d45acc168f9c068235b9e3acc39c1"
+promlens:
+  version: "0.3.0"
+  checksum: "8fdcc621cf559b7e55c0e3cf334b8662ae8f53cf999cdf5d7d303d2841f62ef0"
+node_exporter:
+  version: "1.10.2"
+  checksum: "c46e5b6f53948477ff3a19d97c58307394a29fe64a01905646f026ddc32cb65b"
